@@ -56,3 +56,10 @@ Numeric ID search validates the full decimal string with `^[1-9][0-9]*$`. It doe
 - Name search is intentionally bounded per query for responsiveness. Exact ID navigation is direct and independent of feed position.
 - Clipboard and native share behavior depend on browser capabilities and permissions; copy has a fallback, and sharing falls back to copying the profile URL.
 - Browser storage may be disabled or unavailable; the core experience still works without it.
+
+
+## Infinite-feed reliability note
+
+The feed's logical sequence is independent of its rendered DOM window. It generates the next identity from an exact decimal string and trims only old rendered cards to keep memory bounded. After each batch, it explicitly checks whether the sentinel is still inside the preload region; this prevents an `IntersectionObserver` that remains continuously intersecting from leaving the feed stalled. A scroll/resize fallback is used when `IntersectionObserver` is unavailable.
+
+Identity IDs are validated and retained as decimal strings; the generator and artwork seed process every digit without converting the complete ID to `Number`. The browser and hosting platform may still impose their own practical limits on extremely long URLs, so the in-app ID search is the most reliable way to open exceptionally long IDs.

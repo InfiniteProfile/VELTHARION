@@ -25,9 +25,69 @@
   function cardHTML(p){return `<button class="profile-card" data-id="${p.id}" style="--accent:${p.c1};--accent2:${p.c2}" aria-label="Open identity ${p.name}, ID ${p.id}"><span class="avatar">${svgArtwork(p)}</span><span class="card-content"><span class="profile-name">${escapeHTML(p.name)}</span><span class="profile-id">ID / ${p.id}</span><span class="profile-category"><i class="category-dot"></i>${p.category}</span></span><span class="card-arrow" aria-hidden="true">↗</span></button>`}
   function escapeHTML(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
   function incrementDecimal(s){let a=s.split(''),i=a.length-1;while(i>=0&&a[i]==='9'){a[i]='0';i--}if(i<0)a.unshift('1');else a[i]=String.fromCharCode(a[i].charCodeAt(0)+1);return a.join('')}
-  function addBatch(size=18){if(batchBusy)return;batchBusy=true;try{const frag=document.createDocumentFragment();for(let i=0;i<size;i++){const p=profile(feedNext),wrap=document.createElement('div');wrap.innerHTML=cardHTML(p);frag.append(wrap.firstElementChild);feedNext=incrementDecimal(feedNext)}els.grid.append(frag);els.count.innerHTML=`SEQUENCE <b>000001 → ${feedNext}</b>`;els.announcer.textContent=`More identities loaded. Next identity ${feedNext}.`;trimFeed();}catch(e){console.error('Feed batch failed',e);showToast('Could not prepare that batch. Retrying…');setTimeout(()=>addBatch(size),700)}finally{batchBusy=false}}
-  function trimFeed(){const max=150,remove=36;const cards=$$('.profile-card',els.grid);if(cards.length>max){let height=0;for(let i=0;i<remove;i++){const c=cards[i];height+=c.getBoundingClientRect().height+14;c.remove()}window.scrollBy(0,-height);}}
-  function setupObserver(){if(observer)observer.disconnect();if('IntersectionObserver'in window){observer=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting))addBatch(18)},{rootMargin:'1000px 0px'});observer.observe(els.sentinel)}else{const check=()=>{if(window.innerHeight+window.scrollY>document.documentElement.scrollHeight-1000)addBatch(18)};window.addEventListener('scroll',throttle(check,160),{passive:true});}}
+  function addBatch(size=18){
+    if(batchBusy)return;
+    batchBusy=true;
+    try{
+      const frag=document.createDocumentFragment();
+      for(let i=0;i<size;i++){
+        const id=feedNext;
+        const p=profile(id);
+        const wrap=document.createElement('div');
+        wrap.innerHTML=cardHTML(p);
+        frag.append(wrap.firstElementChild);
+        feedNext=incrementDecimal(id);
+      }
+      els.grid.append(frag);
+      els.count.innerHTML=`SEQUENCE <b>000001 → ${feedNext}</b>`;
+      els.announcer.textContent=`More identities loaded. Next identity ${feedNext}.`;
+      trimFeed();
+    }catch(e){
+      console.error('Feed batch failed',e);
+      showToast('Could not prepare that batch. Retrying…');
+      setTimeout(()=>addBatch(size),700);
+    }finally{
+      batchBusy=false;
+      // IntersectionObserver may not fire again if the sentinel remains inside
+      // its root margin after appending. Explicitly re-check after every batch.
+      requestAnimationFrame(()=>{
+        if(document.visibilityState!=='hidden' && els.sentinel.getBoundingClientRect().top < window.innerHeight + 1000){
+          addBatch(size);
+        }
+      });
+    }
+  }
+  function trimFeed(){
+    // Bound rendered DOM, not the logical identity sequence. The next ID is
+    // maintained separately as an exact decimal string and never reset.
+    const max=150,remove=36;
+    const cards=$$('.profile-card',els.grid);
+    if(cards.length>max){
+      let height=0;
+      for(let i=0;i<remove;i++){
+        const c=cards[i];
+        if(!c)break;
+        height+=c.getBoundingClientRect().height+14;
+        c.remove();
+      }
+      if(height)window.scrollBy(0,-height);
+    }
+  }
+  function setupObserver(){
+    if(observer)observer.disconnect();
+    if('IntersectionObserver'in window){
+      observer=new IntersectionObserver(entries=>{
+        if(entries.some(e=>e.isIntersecting))addBatch(18);
+      },{rootMargin:'1000px 0px'});
+      observer.observe(els.sentinel);
+    }else{
+      const check=()=>{
+        if(window.innerHeight+window.scrollY>document.documentElement.scrollHeight-1000)addBatch(18);
+      };
+      window.addEventListener('scroll',throttle(check,160),{passive:true});
+      window.addEventListener('resize',throttle(check,160),{passive:true});
+    }
+  }
   function throttle(fn,wait){let last=0;return(...args)=>{const now=Date.now();if(now-last>=wait){last=now;fn(...args)}}}
   function showToast(msg){els.toast.textContent=msg;els.toast.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>els.toast.classList.remove('show'),2300)}
   function setView(view){const detail=view==='detail';els.main.classList.toggle('hidden',detail);els.detail.classList.toggle('hidden',!detail);if(!detail){window.scrollTo({top:returnScroll,behavior:settings.animations?'smooth':'auto'});}
