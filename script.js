@@ -9,7 +9,7 @@
   const COLORS=[['#8b5cf6','#d61f45'],['#a78bfa','#e94b79'],['#6657dc','#ef704f'],['#c15ce8','#6245bd'],['#7a62ff','#b52e65'],['#b88bff','#d93656'],['#4e66bd','#ce4b82'],['#8b5cf6','#ed8d5a'],['#b35de0','#503d9c'],['#7c4dff','#ed4264']];
   const SHAPES=['crystal','orbital','prism','monolith','sigil','eclipse','lattice','shard'];
   const defaults={contrast:false,compact:false,reducedEffects:false,animations:true,history:false};
-  let settings=loadSettings(), feedNext='1', batchBusy=false, observer=null, toastTimer=0, currentId=null, returnScroll=0, searchMode='id', historyIds=[];
+  let settings=loadSettings(), feedNext='1', batchBusy=false, observer=null, toastTimer=0, currentId=null, returnScroll=0, searchMode='id', historyIds=[], feedCheckQueued=false;
   function loadSettings(){try{const v=JSON.parse(localStorage.getItem('veltharion-settings')||'{}');return {...defaults,...(v&&typeof v==='object'?v:{})}}catch{return {...defaults}}}
   function saveSettings(){try{localStorage.setItem('veltharion-settings',JSON.stringify(settings))}catch{}}
   function loadHistory(){try{const v=JSON.parse(localStorage.getItem('veltharion-search-history')||'[]');return Array.isArray(v)?v.filter(x=>typeof x==='string').slice(0,8):[]}catch{return []}}
@@ -25,9 +25,10 @@
   function cardHTML(p){return `<button class="profile-card" data-id="${p.id}" style="--accent:${p.c1};--accent2:${p.c2}" aria-label="Open identity ${p.name}, ID ${p.id}"><span class="avatar">${svgArtwork(p)}</span><span class="card-content"><span class="profile-name">${escapeHTML(p.name)}</span><span class="profile-id">ID / ${p.id}</span><span class="profile-category"><i class="category-dot"></i>${p.category}</span></span><span class="card-arrow" aria-hidden="true">↗</span></button>`}
   function escapeHTML(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
   function incrementDecimal(s){let a=s.split(''),i=a.length-1;while(i>=0&&a[i]==='9'){a[i]='0';i--}if(i<0)a.unshift('1');else a[i]=String.fromCharCode(a[i].charCodeAt(0)+1);return a.join('')}
-  function addBatch(size=18){
-    if(batchBusy)return;
+  function addBatch(size=24){
+    if(batchBusy || document.visibilityState==='hidden') return;
     batchBusy=true;
+    let failed=false;
     try{
       const frag=document.createDocumentFragment();
       for(let i=0;i<size;i++){
@@ -40,53 +41,60 @@
       }
       els.grid.append(frag);
       els.count.innerHTML=`SEQUENCE <b>000001 → ${feedNext}</b>`;
-      els.announcer.textContent=`More identities loaded. Next identity ${feedNext}.`;
+      els.announcer.textContent=`Identities prepared. Next identity ${feedNext}.`;
       trimFeed();
     }catch(e){
+      failed=true;
       console.error('Feed batch failed',e);
-      showToast('Could not prepare that batch. Retrying…');
-      setTimeout(()=>addBatch(size),700);
+      showToast('Could not prepare identities. Retrying…');
     }finally{
       batchBusy=false;
-      // IntersectionObserver may not fire again if the sentinel remains inside
-      // its root margin after appending. Explicitly re-check after every batch.
-      requestAnimationFrame(()=>{
-        if(document.visibilityState!=='hidden' && els.sentinel.getBoundingClientRect().top < window.innerHeight + 1000){
-          addBatch(size);
-        }
-      });
+      // Recheck after layout settles. This prevents an observer/sentinel from
+      // getting stranded when the viewport is taller than the remaining feed.
+      if(failed) setTimeout(()=>queueFeedCheck(true),250);
+      else queueFeedCheck(false);
     }
   }
   function trimFeed(){
-    // Bound rendered DOM, not the logical identity sequence. The next ID is
-    // maintained separately as an exact decimal string and never reset.
-    const max=150,remove=36;
+    // Bound DOM size without double-applying browser scroll anchoring.
+    const max=180,remove=36;
     const cards=$$('.profile-card',els.grid);
-    if(cards.length>max){
-      let height=0;
-      for(let i=0;i<remove;i++){
-        const c=cards[i];
-        if(!c)break;
-        height+=c.getBoundingClientRect().height+14;
-        c.remove();
-      }
-      if(height)window.scrollBy(0,-height);
-    }
+    if(cards.length<=max) return;
+    const firstVisible=cards.findIndex(c=>c.getBoundingClientRect().bottom>0);
+    // Never remove cards intersecting the viewport; keep the trim safely behind it.
+    if(firstVisible<remove) return;
+    const anchor=cards[firstVisible];
+    const before=anchor.getBoundingClientRect().top;
+    for(let i=0;i<remove;i++) cards[i].remove();
+    const after=anchor.getBoundingClientRect().top;
+    const delta=after-before;
+    if(delta) window.scrollBy(0,delta);
+  }
+  function nearFeedEnd(){
+    return els.sentinel.getBoundingClientRect().top <= window.innerHeight + 1800;
+  }
+  function queueFeedCheck(force){
+    if(feedCheckQueued) return;
+    feedCheckQueued=true;
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      feedCheckQueued=false;
+      if(document.visibilityState!=='hidden' && (force || nearFeedEnd())) addBatch(24);
+    }));
   }
   function setupObserver(){
-    if(observer)observer.disconnect();
-    if('IntersectionObserver'in window){
+    if(observer) observer.disconnect();
+    // Scroll/resize checks complement the observer, and also recover if an
+    // observer callback is skipped by a browser or the sentinel is already in view.
+    const check=()=>{if(nearFeedEnd()) queueFeedCheck(false)};
+    window.addEventListener('scroll',throttle(check,80),{passive:true});
+    window.addEventListener('resize',throttle(check,80),{passive:true});
+    if('IntersectionObserver' in window){
       observer=new IntersectionObserver(entries=>{
-        if(entries.some(e=>e.isIntersecting))addBatch(18);
-      },{rootMargin:'1000px 0px'});
+        if(entries.some(e=>e.isIntersecting)) queueFeedCheck(false);
+      },{rootMargin:'1800px 0px'});
       observer.observe(els.sentinel);
-    }else{
-      const check=()=>{
-        if(window.innerHeight+window.scrollY>document.documentElement.scrollHeight-1000)addBatch(18);
-      };
-      window.addEventListener('scroll',throttle(check,160),{passive:true});
-      window.addEventListener('resize',throttle(check,160),{passive:true});
     }
+    queueFeedCheck(false);
   }
   function throttle(fn,wait){let last=0;return(...args)=>{const now=Date.now();if(now-last>=wait){last=now;fn(...args)}}}
   function showToast(msg){els.toast.textContent=msg;els.toast.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>els.toast.classList.remove('show'),2300)}
@@ -111,5 +119,5 @@
   $$('.search-tab').forEach(b=>b.addEventListener('click',()=>setSearchMode(b.dataset.mode)));$('#search-form').addEventListener('submit',submitSearch);$$('[data-setting]').forEach(input=>input.addEventListener('change',()=>{settings[input.dataset.setting]=input.checked;saveSettings();applySettings()}));
   document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!els.search.classList.contains('hidden'))closeOverlay(els.search);if(!els.settings.classList.contains('hidden'))closeOverlay(els.settings)}if(e.key==='/'&&!e.ctrlKey&&!e.metaKey&&!['INPUT','TEXTAREA'].includes(document.activeElement.tagName)){e.preventDefault();openOverlay(els.search);renderSuggestions()}if(e.altKey&&e.key==='ArrowLeft'&&!els.detail.classList.contains('hidden'))backToFeed()});
   window.addEventListener('popstate',()=>{routeFromLocation()});window.addEventListener('hashchange',()=>{if(location.hash.startsWith('#profile/'))routeFromLocation();else if(!els.detail.classList.contains('hidden')){currentId=null;els.detail.classList.add('hidden');els.main.classList.remove('hidden')}});
-  applySettings();historyIds=loadHistory();renderSuggestions();addBatch(24);setupObserver();if(location.hash.startsWith('#profile/'))routeFromLocation();const intro=$('#intro');const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;setTimeout(()=>intro.classList.add('done'),reduce?50:1050);setTimeout(()=>intro.remove(),reduce?450:1500);
+  applySettings();historyIds=loadHistory();renderSuggestions();setupObserver();addBatch(36);if(location.hash.startsWith('#profile/'))routeFromLocation();const intro=$('#intro');const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;setTimeout(()=>intro.classList.add('done'),reduce?50:1050);setTimeout(()=>intro.remove(),reduce?450:1500);
 })();
